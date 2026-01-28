@@ -21,7 +21,7 @@ hospital_doctor_profile_update = HospitalDoctorProfileViewSet.as_view({
 # Swagger setup
 schema_view = get_schema_view(
     openapi.Info(
-        title="Pcod API",
+        title="Serene API",
         default_version='v1',
         description="API documentation with Swagger & DRF Router",
         terms_of_service="https://www.example.com/terms/",
@@ -40,7 +40,7 @@ urlpatterns = [
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
     path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json'),
 
-
+    path('chat/', ChatbotAPIView.as_view(), name='chatbot_api'),
     path("predict/", depression_predict, name="depression_predict"),
     path("predict-adhd/", views.adhd_predict, name="adhd_predict"),
     path("user_view_book/", UserViewBook.as_view(), name="user_view_book"),

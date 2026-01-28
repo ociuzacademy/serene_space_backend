@@ -87,6 +87,7 @@ class HospitalDoctorRegisterViewSet(viewsets.ModelViewSet):
 
 
 # views.py
+# views.py
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from rest_framework import status
@@ -104,10 +105,9 @@ ENCODER_PATH = os.path.join(settings.BASE_DIR, "sereneapp/ml_assets/label_encode
 
 pipeline = joblib.load(MODEL_PATH)
 label_encoder = joblib.load(ENCODER_PATH)
-# print("Label Encoder Classes:", label_encoder.classes_)
 
 LABEL_MAP = {
-    0: "Bipolar Type-2",
+    0: "Bipolar Type-1",
     1: "Bipolar Type-2",
     2: "Depression",
     3: "Normal"
@@ -115,7 +115,6 @@ LABEL_MAP = {
 
 @api_view(['POST'])
 def depression_predict(request):
-
     try:
         fields = [
             "sadness", "euphoric", "exhausted", "sleep_disorder",
@@ -125,20 +124,29 @@ def depression_predict(request):
         ]
 
         encoded_values = []
+
         for f in fields:
             val = request.data.get(f)
             if val is None:
-                return Response({"error": f"{f} is required"}, status=400)
+                return Response(
+                    {"error": f"{f} is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             encoded_values.append(ENCODING.get(val.lower(), 0))
 
-        input_array = np.array([encoded_values])
-
-        pred_encoded = pipeline.predict(input_array)
-        pred_value = int(pred_encoded[0])
-
-        # Manual mapping
-        pred_label = LABEL_MAP.get(pred_value, f"Unknown class: {pred_value}")
+        # -------------------------------
+        # ✅ NORMAL OVERRIDE LOGIC
+        # -------------------------------
+        # most-often = 0, seldom = 1
+        # If ALL values are <= 1 → Normal
+        if all(v <= 1 for v in encoded_values):
+            pred_label = "Normal"
+        else:
+            input_array = np.array([encoded_values])
+            pred_encoded = pipeline.predict(input_array)
+            pred_value = int(pred_encoded[0])
+            pred_label = LABEL_MAP.get(pred_value, "Unknown")
 
         serializer = DepressionPredictionSerializer(data={
             **request.data,
@@ -151,11 +159,15 @@ def depression_predict(request):
                 "status": "success",
                 "prediction": pred_label,
                 "data": serializer.data
-            }, status=201)   
-        return Response(serializer.errors, status=400)
+            }, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     except Exception as e:
-        return Response({"error": str(e)}, status=500)
+        return Response(
+            {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 from sereneapp.adhd_encoding import ADHD_ENCODING
 
@@ -583,3 +595,119 @@ class UserViewBook(APIView):
         serializer = BookSerializer(books, many=True)
         return Response(serializer.data)
 
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+from django.conf import settings
+
+# Load environment variables
+load_dotenv()
+api_key = os.getenv("GOOGLE_API_KEY")
+
+if not api_key:
+    print("❌ GOOGLE_API_KEY not found in .env file")
+
+# Configure Gemini API
+genai.configure(api_key=settings.GOOGLE_API_KEY)
+
+# Create Gemini model instance
+model = genai.GenerativeModel("gemini-2.5-flash")
+
+# -----------------------------
+# Keywords
+# -----------------------------
+
+DEPRESSION_KEYWORDS = [
+    "depression", "depressed", "sad", "sadness", "hopeless", "worthless",
+    "lonely", "anxiety", "panic", "stress", "overthinking", "mental health",
+    "mood swings", "crying", "low mood", "tired", "fatigue", "exhausted",
+    "sleep disorder", "insomnia", "oversleeping",
+    "loss of interest", "no motivation", "burnout",
+    "self hate", "guilt", "shame",
+    "therapy", "counselling", "psychologist", "psychiatrist",
+    "antidepressant", "medicine", "treatment", "healing",
+    "Bipolar","Bipolar-Type 1", "Bipolar-Type 2", "Manic Depression","Cyclothymic Disorder"
+    "BipolarType1", "BipolarType2","Bipolar-Type-1", "Bipolar-Type-2"
+]
+
+CRISIS_KEYWORDS = [
+    "kill myself", "end my life", "suicide", "self harm", "hurt myself",
+    "no reason to live", "die"
+]
+
+GREETINGS = ["hi", "hello", "hey", "morning", "evening", "afternoon"]
+
+# -----------------------------
+# Chatbot API
+# -----------------------------
+
+class ChatbotAPIView(APIView):
+    def post(self, request):
+        user_message = request.data.get("message", "").strip()
+
+        if not user_message:
+            return Response({
+                "type": "error",
+                "reply": "Message cannot be empty."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        user_message_lower = user_message.lower()
+        user_words = user_message_lower.split()
+
+        # 🚨 Crisis check (highest priority)
+        if any(word in user_message_lower for word in CRISIS_KEYWORDS):
+            return Response({
+                "type": "crisis",
+                "reply": (
+                    "I'm really sorry that you're feeling this way 💔. "
+                    "You’re not alone, and help is available.\n\n"
+                    "Please reach out to someone you trust or a mental health professional.\n\n"
+                    "📞 **India Suicide Prevention Helpline:** 9152987821\n"
+                    "📞 **AASRA:** 91-22-27546669\n\n"
+                    "If you’re in immediate danger, please contact emergency services right now."
+                )
+            })
+
+        # ✅ Depression-related message
+        if any(keyword in user_message_lower for keyword in DEPRESSION_KEYWORDS):
+            try:
+                response = model.generate_content(
+                    f"You are a compassionate mental health support assistant focused on depression. "
+                    f"Respond empathetically and calmly. "
+                    f"Do NOT diagnose or prescribe medication. "
+                    f"Encourage healthy coping strategies and seeking professional help when needed.\n\n"
+                    f"User message: {user_message}"
+                )
+
+                return Response({
+                    "type": "mental_health_support",
+                    "reply": response.text
+                })
+
+            except Exception as e:
+                return Response({
+                    "type": "error",
+                    "reply": str(e)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 👋 Greeting (checked AFTER depression)
+        if any(greet in user_words for greet in GREETINGS):
+            return Response({
+                "type": "greeting",
+                "reply": (
+                    "Hello 💙 I'm here to support you. "
+                    "You can talk to me about stress, anxiety, sadness, or anything related to depression."
+                )
+            })
+
+        # ❌ Not related
+        return Response({
+            "type": "not_related",
+            "reply": (
+                "I’m here to help with mental health topics like depression, stress, and emotional well-being."
+            )
+        })
